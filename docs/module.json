@@ -2,7 +2,7 @@
   "id": "table-quantities",
   "title": "Table Quantities",
   "description": "Adds quantity roll support to RollTable results. Use [[/r 1d4]]@UUID[Item.xxx]{Name} syntax to roll item quantities, or [[/r 2d4]]@UUID[RollTable.xxx]{Name} to draw from sub-tables multiple times.",
-  "version": "1.0.0-beta.4",
+  "version": "1.0.0-beta.5",
   "compatibility": {
     "minimum": "13",
     "verified": "13"

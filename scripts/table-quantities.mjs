@@ -16,6 +16,16 @@ const MAX_RECURSION_DEPTH = 10;
  */
 const resultQuantities = new WeakMap();
 
+/**
+ * Map of documentUuid → Array of pending quantities.
+ * Populated during processResult for Item results, consumed by the
+ * preCreateItem hook to apply quantities when items are actually created
+ * (e.g. by Item Piles populating a vendor inventory).
+ * Uses an array (queue) so multiple draws of the same item each get their
+ * own rolled quantity applied in order.
+ */
+const pendingQuantities = new Map();
+
 /* ---------------------------------------- */
 /*  Settings Registration                    */
 /* ---------------------------------------- */
@@ -126,6 +136,7 @@ async function processResult(result, parsed, depth) {
         type: "document",
         documentUuid: parsed.uuid,
         name: parsed.name,
+        description: "",
         img: doc.img ?? null
       });
     }
@@ -135,6 +146,13 @@ async function processResult(result, parsed, depth) {
       documentUuid: parsed.uuid,
       name: parsed.name
     });
+
+    // Queue the quantity so the preCreateItem hook can apply it
+    if (!pendingQuantities.has(parsed.uuid)) {
+      pendingQuantities.set(parsed.uuid, []);
+    }
+    pendingQuantities.get(parsed.uuid).push(quantity);
+
     return [result];
   }
 
@@ -279,4 +297,22 @@ Hooks.once("init", () => {
   } else {
     monkeyPatchDraw();
   }
+
+  // Apply rolled quantities when items are created (e.g. by Item Piles)
+  Hooks.on("preCreateItem", (item, data, options) => {
+    // Determine the source UUID — Item Piles and Foundry use flags.core.sourceId
+    const sourceId = data?.flags?.core?.sourceId ?? item.flags?.core?.sourceId;
+    if (!sourceId) return;
+
+    const queue = pendingQuantities.get(sourceId);
+    if (!queue || !queue.length) return;
+
+    // Consume the next pending quantity for this UUID
+    const quantity = queue.shift();
+    if (!queue.length) pendingQuantities.delete(sourceId);
+
+    const quantityPath = game.settings.get(MODULE_ID, "quantityPath");
+    foundry.utils.setProperty(data, quantityPath, quantity);
+    console.log(`${MODULE_ID} | Applied quantity ${quantity} to ${data.name ?? item.name} via ${quantityPath}`);
+  });
 });
