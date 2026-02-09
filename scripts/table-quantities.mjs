@@ -1,14 +1,20 @@
 const MODULE_ID = "table-quantities";
 
 // For TEXT type results: [[/r 1d4]]@UUID[Item.xxx]{Display Name}
-// Group 1: dice formula, Group 2: UUID, Group 3: display name
 const TEXT_PATTERN = /\[\[\/r\s+([^\]]+)\]\]\s*@UUID\[([^\]]+)\]\{([^}]*)\}/;
 
 // For DOCUMENT type results: just [[/r 1d4]] in the description field
-// Group 1: dice formula
 const ROLL_PATTERN = /\[\[\/r\s+([^\]]+)\]\]/;
 
 const MAX_RECURSION_DEPTH = 10;
+
+/**
+ * WeakMap storing quantity data for processed results.
+ * Keyed by TableResult document, value is {quantity, documentUuid, name}.
+ * We never mutate the result documents themselves — this avoids breaking
+ * Foundry's DataModel proxies and downstream consumers like Item Piles.
+ */
+const resultQuantities = new WeakMap();
 
 /* ---------------------------------------- */
 /*  Settings Registration                    */
@@ -38,11 +44,6 @@ function registerSettings() {
 /*  Dice Rolling                             */
 /* ---------------------------------------- */
 
-/**
- * Evaluate a dice formula string and return the total.
- * @param {string} formula - e.g. "1d4", "2d6+1"
- * @returns {Promise<number>}
- */
 async function evaluateFormula(formula) {
   const roll = new Roll(formula.trim());
   await roll.evaluate();
@@ -54,38 +55,24 @@ async function evaluateFormula(formula) {
 /* ---------------------------------------- */
 
 /**
- * Parse a table result for a quantity pattern. Handles two cases:
- *
- * 1. DOCUMENT type: description contains [[/r formula]], documentUuid has the target
- * 2. TEXT type: description contains [[/r formula]]@UUID[...]{Name}
- *
- * @param {TableResult} result - A v13 TableResult document
- * @returns {{formula: string, uuid: string, name: string}|null}
+ * Parse a table result for a quantity pattern. Handles:
+ * 1. DOCUMENT type: [[/r formula]] in description, documentUuid has the target
+ * 2. TEXT type: [[/r formula]]@UUID[...]{Name} in description
  */
 function parseQuantityResult(result) {
   const description = result.description ?? "";
 
-  // Case 1: Document type result — formula in description, UUID on the result itself
   if (result.type === "document" && result.documentUuid) {
     const rollMatch = description.match(ROLL_PATTERN);
     if (rollMatch) {
-      return {
-        formula: rollMatch[1],
-        uuid: result.documentUuid,
-        name: result.name
-      };
+      return { formula: rollMatch[1], uuid: result.documentUuid, name: result.name };
     }
   }
 
-  // Case 2: Text type result — full pattern in description
   if (result.type === "text") {
     const fullMatch = description.match(TEXT_PATTERN);
     if (fullMatch) {
-      return {
-        formula: fullMatch[1],
-        uuid: fullMatch[2],
-        name: fullMatch[3]
-      };
+      return { formula: fullMatch[1], uuid: fullMatch[2], name: fullMatch[3] };
     }
   }
 
@@ -96,16 +83,6 @@ function parseQuantityResult(result) {
 /*  Result Processing                        */
 /* ---------------------------------------- */
 
-/**
- * Process a single table result that matches a quantity pattern.
- * For Item UUIDs: attaches quantity data to the result flags.
- * For RollTable UUIDs: recursively draws from the sub-table.
- *
- * @param {TableResult} result - The drawn TableResult document
- * @param {object} parsed - Output of parseQuantityResult
- * @param {number} depth - Current recursion depth
- * @returns {Promise<TableResult[]>} Processed result(s)
- */
 async function processResult(result, parsed, depth) {
   const quantity = await evaluateFormula(parsed.formula);
   if (quantity <= 0) return [result];
@@ -131,30 +108,20 @@ async function processResult(result, parsed, depth) {
     return subResults;
   }
 
-  // --- Item reference: attach quantity to result flags ---
+  // --- Item reference: store quantity in WeakMap (never mutate the result) ---
   if (doc instanceof Item) {
-    // Store quantity data in flags (in-memory only, not persisted to DB)
-    result.flags = result.flags ?? {};
-    result.flags[MODULE_ID] = {
+    resultQuantities.set(result, {
       quantity,
       documentUuid: parsed.uuid,
-      name: parsed.name,
-      originalDescription: result.description
-    };
+      name: parsed.name
+    });
     return [result];
   }
 
-  // Unknown document type
   console.warn(`${MODULE_ID} | Unsupported document type for UUID: ${parsed.uuid}`);
   return [result];
 }
 
-/**
- * Process an array of table results, expanding quantity patterns.
- * @param {TableResult[]} results
- * @param {number} [depth=0]
- * @returns {Promise<TableResult[]>}
- */
 async function processResults(results, depth = 0) {
   const processed = [];
   for (const result of results) {
@@ -170,96 +137,83 @@ async function processResults(results, depth = 0) {
 }
 
 /* ---------------------------------------- */
-/*  RollTable.prototype.draw Wrapper         */
+/*  Chat Message                             */
 /* ---------------------------------------- */
 
 /**
- * Wrapped draw function. Suppresses the original chat message, processes
- * results for quantity patterns, then sends its own chat message with
- * quantity-modified descriptions.
- *
- * @param {Function} wrapped - The original draw method (libWrapper)
- * @param {object} [options={}]
- * @returns {Promise<{roll: Roll, results: TableResult[]}>}
+ * Build a custom chat message showing quantity results.
+ * Only called when modifyChat is enabled and there are quantities to show.
  */
+async function sendQuantityChat(table, results, roll, rollMode) {
+  const quantityEntries = results
+    .map(r => resultQuantities.get(r))
+    .filter(Boolean);
+
+  if (!quantityEntries.length) return;
+
+  const lines = quantityEntries.map(q => `<li>${q.quantity}x @UUID[${q.documentUuid}]{${q.name}}</li>`);
+  const content = `<div class="table-quantities-results"><ul>${lines.join("")}</ul></div>`;
+
+  const enrichedContent = await TextEditor.enrichHTML(content);
+  await ChatMessage.create({
+    flavor: `Table Quantities from <strong>${table.name}</strong>`,
+    content: enrichedContent,
+    speaker: ChatMessage.getSpeaker(),
+    whisper: rollMode === "gmroll" ? game.users.filter(u => u.isGM).map(u => u.id) : undefined
+  });
+}
+
+/* ---------------------------------------- */
+/*  RollTable.prototype.draw Wrapper         */
+/* ---------------------------------------- */
+
 async function wrappedDraw(wrapped, options = {}) {
-  const wantChat = options.displayChat !== false;
+  let drawResult;
+  try {
+    // Let the original draw run completely (including its own chat message)
+    drawResult = await wrapped(options);
 
-  // Suppress the original chat message so we can modify results first
-  const drawResult = await wrapped({ ...options, displayChat: false });
+    // Post-process results for quantity patterns
+    drawResult.results = await processResults(drawResult.results);
 
-  // Post-process results for quantity patterns
-  drawResult.results = await processResults(drawResult.results);
-
-  // Send chat message with quantity info
-  if (wantChat) {
+    // Send an additional chat message with rolled quantities if enabled
+    const wantChat = options.displayChat !== false;
     const modifyChat = game.settings.get(MODULE_ID, "modifyChat");
-    const savedDescriptions = new Map();
-
-    // Temporarily rewrite descriptions to show rolled quantities
-    if (modifyChat) {
-      for (const result of drawResult.results) {
-        const qtyData = result.flags?.[MODULE_ID];
-        if (qtyData?.quantity) {
-          savedDescriptions.set(result, result.description);
-          result.description = `${qtyData.quantity}x @UUID[${qtyData.documentUuid}]{${qtyData.name}}`;
-        }
-      }
+    if (wantChat && modifyChat) {
+      await sendQuantityChat(this, drawResult.results, drawResult.roll, options.rollMode);
     }
 
-    await this.toMessage(drawResult.results, {
-      roll: drawResult.roll,
-      messageOptions: { rollMode: options.rollMode }
-    });
-
-    // Restore original descriptions so the DB documents aren't polluted
-    for (const [result, originalDesc] of savedDescriptions) {
-      result.description = originalDesc;
-    }
+    // Fire hook so other modules can consume the processed results
+    Hooks.callAll(`${MODULE_ID}.resultsReady`, drawResult.results, resultQuantities);
+  } catch (err) {
+    console.error(`${MODULE_ID} | Error processing table draw:`, err);
+    // If our processing fails, re-run the original draw unmodified
+    if (!drawResult) drawResult = await wrapped(options);
   }
-
-  // Fire hook so other modules can consume the processed results
-  Hooks.callAll(`${MODULE_ID}.resultsReady`, drawResult.results);
 
   return drawResult;
 }
 
-/**
- * Monkey-patch fallback when libWrapper is not available.
- */
 function monkeyPatchDraw() {
   const original = RollTable.prototype.draw;
   RollTable.prototype.draw = async function (options = {}) {
-    const wantChat = options.displayChat !== false;
-    const drawResult = await original.call(this, { ...options, displayChat: false });
+    let drawResult;
+    try {
+      drawResult = await original.call(this, options);
+      drawResult.results = await processResults(drawResult.results);
 
-    drawResult.results = await processResults(drawResult.results);
-
-    if (wantChat) {
+      const wantChat = options.displayChat !== false;
       const modifyChat = game.settings.get(MODULE_ID, "modifyChat");
-      const savedDescriptions = new Map();
-
-      if (modifyChat) {
-        for (const result of drawResult.results) {
-          const qtyData = result.flags?.[MODULE_ID];
-          if (qtyData?.quantity) {
-            savedDescriptions.set(result, result.description);
-            result.description = `${qtyData.quantity}x @UUID[${qtyData.documentUuid}]{${qtyData.name}}`;
-          }
-        }
+      if (wantChat && modifyChat) {
+        await sendQuantityChat(this, drawResult.results, drawResult.roll, options.rollMode);
       }
 
-      await this.toMessage(drawResult.results, {
-        roll: drawResult.roll,
-        messageOptions: { rollMode: options.rollMode }
-      });
-
-      for (const [result, originalDesc] of savedDescriptions) {
-        result.description = originalDesc;
-      }
+      Hooks.callAll(`${MODULE_ID}.resultsReady`, drawResult.results, resultQuantities);
+    } catch (err) {
+      console.error(`${MODULE_ID} | Error processing table draw:`, err);
+      if (!drawResult) drawResult = await original.call(this, options);
     }
 
-    Hooks.callAll(`${MODULE_ID}.resultsReady`, drawResult.results);
     return drawResult;
   };
 }
@@ -271,6 +225,21 @@ function monkeyPatchDraw() {
 const api = {
   processResults,
   parseQuantityResult,
+
+  /**
+   * Get quantity data for a result, if any was rolled.
+   * @param {TableResult} result
+   * @returns {{quantity: number, documentUuid: string, name: string}|undefined}
+   */
+  getQuantity(result) {
+    return resultQuantities.get(result);
+  },
+
+  /**
+   * The WeakMap containing all quantity data keyed by TableResult.
+   */
+  resultQuantities,
+
   TEXT_PATTERN,
   ROLL_PATTERN
 };
@@ -283,10 +252,8 @@ Hooks.once("init", () => {
   console.log(`${MODULE_ID} | Initializing Table Quantities`);
   registerSettings();
 
-  // Expose public API
   game.modules.get(MODULE_ID).api = api;
 
-  // Wrap RollTable.prototype.draw
   if (typeof libWrapper !== "undefined") {
     libWrapper.register(MODULE_ID, "RollTable.prototype.draw", wrappedDraw, "WRAPPER");
   } else {
