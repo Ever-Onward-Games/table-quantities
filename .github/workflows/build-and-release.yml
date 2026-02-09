@@ -1,0 +1,175 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Module
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build and create release ZIP
+        run: npm run build:release
+
+      - name: Verify build output
+        run: |
+          echo "Checking dist/ directory..."
+          ls -lh dist/
+          echo ""
+          echo "Checking for ZIP files..."
+          ls -lh dist/*.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: table-quantities
+          path: dist/table-quantities-*.zip
+
+  release:
+    name: Create Releases
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: table-quantities
+          path: ./artifacts
+
+      - name: Extract version from tag
+        id: get_version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Check if prerelease
+        id: check_prerelease
+        run: |
+          VERSION=${{ steps.get_version.outputs.VERSION }}
+          if [[ "$VERSION" == *"beta"* ]] || [[ "$VERSION" == *"alpha"* ]] || [[ "$VERSION" == *"rc"* ]]; then
+            echo "IS_PRERELEASE=true" >> $GITHUB_OUTPUT
+          else
+            echo "IS_PRERELEASE=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare release files
+        run: |
+          mkdir -p ./release
+          # Extract module.json from the versioned ZIP
+          unzip -j ./artifacts/table-quantities-v${{ steps.get_version.outputs.VERSION }}.zip table-quantities/module.json -d ./release
+          # Copy ZIP with generic name for the release
+          cp ./artifacts/table-quantities-v${{ steps.get_version.outputs.VERSION }}.zip ./release/table-quantities.zip
+          ls -lh ./release/
+
+      - name: Prepare test channel module.json
+        run: |
+          mkdir -p ./release-test
+          cp ./release/table-quantities.zip ./release-test/table-quantities.zip
+          # Create a module.json with test channel URLs
+          python3 -c "
+          import json
+          with open('./release/module.json', 'r') as f:
+              data = json.load(f)
+          data['manifest'] = 'https://github.com/Ever-Onward-Games/table-quantities/releases/download/table-quantities-test-latest/module.json'
+          data['download'] = 'https://github.com/Ever-Onward-Games/table-quantities/releases/download/table-quantities-test-latest/table-quantities.zip'
+          with open('./release-test/module.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+          echo "Test channel module.json:"
+          cat ./release-test/module.json
+
+      # --- Versioned release (always created) ---
+      - name: Create versioned release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: table-quantities-v${{ steps.get_version.outputs.VERSION }}
+          name: Table Quantities v${{ steps.get_version.outputs.VERSION }}
+          body: |
+            **Table Quantities v${{ steps.get_version.outputs.VERSION }}**
+
+            Install via manifest URL or download the ZIP.
+          files: |
+            ./release/module.json
+            ./release/table-quantities.zip
+          draft: false
+          prerelease: ${{ steps.check_prerelease.outputs.IS_PRERELEASE == 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Test channel (always updated — latest beta or stable) ---
+      - name: Update test channel (test-latest)
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: table-quantities-test-latest
+          name: Table Quantities (Test Channel)
+          body: |
+            **Test Channel — Table Quantities**
+
+            Current Version: v${{ steps.get_version.outputs.VERSION }}
+
+            This release is automatically updated to the latest version (including betas).
+
+            ## Installation
+
+            Use this manifest URL in Foundry VTT:
+            ```
+            https://github.com/Ever-Onward-Games/table-quantities/releases/download/table-quantities-test-latest/module.json
+            ```
+          files: |
+            ./release-test/module.json
+            ./release-test/table-quantities.zip
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # --- Stable channel (only for non-prerelease tags) ---
+      - name: Update stable channel (latest)
+        if: steps.check_prerelease.outputs.IS_PRERELEASE == 'false'
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: table-quantities-latest
+          name: Table Quantities (Latest Stable)
+          body: |
+            **Latest Stable — Table Quantities**
+
+            Current Version: v${{ steps.get_version.outputs.VERSION }}
+
+            This release is automatically updated to the latest stable version.
+
+            ## Installation
+
+            Use this manifest URL in Foundry VTT:
+            ```
+            https://ever-onward-games.github.io/table-quantities/module.json
+            ```
+          files: |
+            ./release/module.json
+            ./release/table-quantities.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

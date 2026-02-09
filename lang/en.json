@@ -1,0 +1,6 @@
+{
+  "TABLE_QUANTITIES.SettingQuantityPath": "Item Quantity Path",
+  "TABLE_QUANTITIES.SettingQuantityPathHint": "The data path for item quantity in your game system (e.g., system.quantity for PF1/dnd5e).",
+  "TABLE_QUANTITIES.SettingModifyChat": "Show Quantities in Chat",
+  "TABLE_QUANTITIES.SettingModifyChatHint": "When enabled, chat messages from table draws will display rolled quantities."
+}

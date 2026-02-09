@@ -1,0 +1,30 @@
+{
+  "id": "table-quantities",
+  "title": "Table Quantities",
+  "description": "Adds quantity roll support to RollTable results. Use [[/r 1d4]]@UUID[Item.xxx]{Name} syntax to roll item quantities, or [[/r 2d4]]@UUID[RollTable.xxx]{Name} to draw from sub-tables multiple times.",
+  "version": "1.0.0-beta.1",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "authors": [
+    {
+      "name": "charl"
+    }
+  ],
+  "esmodules": [
+    "scripts/table-quantities.mjs"
+  ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "url": "https://github.com/Ever-Onward-Games/table-quantities",
+  "manifest": "https://ever-onward-games.github.io/table-quantities/module.json",
+  "download": "https://github.com/Ever-Onward-Games/table-quantities/releases/download/table-quantities-latest/table-quantities.zip",
+  "bugs": "https://github.com/Ever-Onward-Games/table-quantities/issues",
+  "changelog": "https://github.com/Ever-Onward-Games/table-quantities/blob/master/CHANGELOG.md"
+}

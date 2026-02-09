@@ -1,0 +1,14 @@
+{
+  "name": "table-quantities",
+  "version": "1.0.0-beta.1",
+  "description": "Foundry VTT module - quantity rolls for RollTable results",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.js",
+    "build:zip": "node scripts/build.js && node scripts/build-zip.js",
+    "build:zip:version": "node scripts/build.js && node scripts/build-zip.js --version",
+    "build:release": "node scripts/build.js && node scripts/build-zip.js --version",
+    "version:sync": "node scripts/sync-versions.js",
+    "version:bump-beta": "node scripts/bump-beta.js"
+  }
+}
