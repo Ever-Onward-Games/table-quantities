@@ -105,11 +105,31 @@ async function processResult(result, parsed, depth) {
       const processed = await processResults(draw.results, depth + 1);
       subResults.push(...processed);
     }
+    // Store quantity on the original result in case anyone needs it
+    resultQuantities.set(result, {
+      quantity,
+      documentUuid: parsed.uuid,
+      name: parsed.name,
+      expandedToSubResults: true
+    });
     return subResults;
   }
 
-  // --- Item reference: store quantity in WeakMap (never mutate the result) ---
+  // --- Item reference: store quantity and ensure result is document-type ---
   if (doc instanceof Item) {
+    // If this was a text-type result with an embedded UUID, promote it to
+    // a document-type result so that Item Piles (and other consumers that
+    // expect documentUuid) can process it without crashing on deprecated
+    // v13 shims.
+    if (result.type === "text") {
+      result.updateSource({
+        type: "document",
+        documentUuid: parsed.uuid,
+        name: parsed.name,
+        img: doc.img ?? null
+      });
+    }
+
     resultQuantities.set(result, {
       quantity,
       documentUuid: parsed.uuid,
