@@ -1,6 +1,6 @@
 {
   "name": "table-quantities",
-  "version": "1.0.0-beta.2",
+  "version": "1.0.0-beta.3",
   "description": "Foundry VTT module - quantity rolls for RollTable results",
   "private": true,
   "scripts": {
